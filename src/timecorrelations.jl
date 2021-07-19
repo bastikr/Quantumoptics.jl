@@ -6,6 +6,8 @@ using QuantumOpticsBase
 using ..timeevolution, ..steadystate
 
 using FFTW
+using IterativeSolvers
+using LinearMaps
 
 
 """
@@ -155,6 +157,67 @@ function correlation2spectrum(tspan, corr; normalize_spec=false)
   spec = 2dt.*fftshift(real(fft(corr)))
 
   omega, normalize_spec ? spec./maximum(spec) : spec
+end
+
+"""
+    timecorrelations.spectrum_iterative(omega, rho, op1, op2, H, J,
+                        method! = IterativeSolvers.bicgstabl!, args...;
+                        Jdagger=dagger.(J), rates=nothing, kwargs...)
+
+Iteratively solve the equation for the spectrum in Fourier space.
+"""
+function spectrum_iterative(omega, rho, op1, op2, H, J,
+                    method! = IterativeSolvers.bicgstabl!, args...;
+                    Jdagger=dagger.(J), rates=nothing, kwargs...)
+
+
+    bl = rho.basis_l
+    br = rho.basis_r
+    M = length(bl)
+
+    # Cache stuff
+    rho_cache = copy(rho)
+    drho = copy(rho)
+    Jrho_cache = copy(rho)
+
+    # Check reducibility
+    isreducible = timeevolution.check_master(rho,H,J,Jdagger,rates)
+    if isreducible
+        Hnh = timeevolution.nh_hamiltonian(H,J,Jdagger,rates)
+        Hnhdagger = dagger(Hnh)
+        dmaster_ = (drho,rho) -> timeevolution.dmaster_nh!(drho, Hnh, Hnhdagger, J, Jdagger, rates, rho, Jrho_cache)
+    else
+        dmaster_ = (drho,rho) -> timeevolution.dmaster_h!(drho, H, J, Jdagger, rates, rho, Jrho_cache)
+    end
+
+    i = 1
+    # Linear mapping
+    function f!(y,x)
+        # Reshape
+        drho.data .= @views reshape(y, M, M)
+        rho_cache.data .= @views reshape(x, M, M)
+        # Apply function
+        dmaster_(drho,rho_cache)
+        # Recast data
+        @views y .= reshape(drho.data, M^2)
+        @. y = im*omega[i]*x - y
+        return y
+    end
+
+    lm = LinearMaps.LinearMap{eltype(rho)}(f!,M^2;ismutating=true,issymmetric=false,ishermitian=false,isposdef=false)
+
+    R0 = op1*rho
+    x0 = @views reshape(R0.data, M^2)
+    b = reshape(copy(R0.data), M^2)
+
+
+    spec = similar(omega)
+    while i <= length(omega)
+        method!(x0,lm,b,args...;kwargs...)
+        spec[i] = 2*real(expect(op2,R0))
+        i += 1
+    end
+    return spec
 end
 
 

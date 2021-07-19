@@ -64,4 +64,25 @@ omegaFFT, SFFT = timecorrelations.correlation2spectrum(tspan, exp_values)
 tspan[5] = tspan[4]
 @test_throws ArgumentError timecorrelations.correlation2spectrum(tspan, exp_values)
 
+# Test iterative spectrum
+bfock = FockBasis(10)
+η = 1.5
+κ = 1.0
+
+a = destroy(bfock)
+H = η*(a + a')
+J = [sqrt(2κ)*a]
+
+ρs = steadystate.iterative(H, J)
+@test isapprox(expect(a'*a,ρs), η^2 / κ^2; atol=1e-2)
+
+ω = range(-15, 15, length=200)
+S = timecorrelations.spectrum_iterative(ω, ρs, a, a', H, J)
+
+fwhm_idx = findmin(abs.(S .- 0.5*maximum(S)))[2]
+hwhm = abs(ω[fwhm_idx])
+@test abs(κ - hwhm) < 0.3
+
+# TODO: better tests and test lazy operators
+
 end # testset
